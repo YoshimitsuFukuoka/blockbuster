@@ -1,0 +1,40 @@
+tickers:
+  - "7203.T"  # トヨタ自動車
+  - "6758.T"  # ソニーグループ
+  - "9984.T"  # ソフトバンクグループ
+  - "6861.T"  # キーエンス
+  - "8306.T"  # 三菱UFJフィナンシャル
+
+portfolio:
+  initial_capital: 1000000
+  max_position_pct: 0.10
+  commission_rate: 0.001
+
+strategy:
+  ma:
+    short_period: 5
+    long_period: 25
+  rsi:
+    period: 14
+    oversold: 30.0
+    overbought: 70.0
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+  combined_weights:
+    ma: 0.30
+    rsi: 0.35
+    macd: 0.35
+  score_buy_threshold: 0.40
+  score_sell_threshold: -0.40
+
+backtest_start: "2022-01-01"
+backtest_end: "2024-12-31"
+
+aws:
+  region: "ap-northeast-1"
+  s3_bucket: "blockbuster-reports"
+  dynamodb_table: "blockbuster-portfolio"
+  ses_sender: "yoshimitsu.work@gmail.com"
+  ses_recipient: "yoshimitsu.work@gmail.com"

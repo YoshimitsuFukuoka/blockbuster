@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Blockbuster - 株自動売買システム (ペーパートレード + バックテスト)
+
+Globals:
+  Function:
+    Timeout: 600
+    MemorySize: 1024
+    Environment:
+      Variables:
+        PYTHONPATH: /var/task/src
+        TZ: Asia/Tokyo
+
+Parameters:
+  SESEmailAddress:
+    Type: String
+    Description: SES で認証済みの送受信メールアドレス
+    Default: yoshimitsu.work@gmail.com
+
+Resources:
+
+  # ---- S3 バケット (レポート保存) ----
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "blockbuster-reports-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldReports
+            Status: Enabled
+            ExpirationInDays: 365
+
+  # ---- DynamoDB テーブル (ポートフォリオ状態) ----
+  PortfolioTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: blockbuster-portfolio
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: portfolio_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: portfolio_id
+          KeyType: HASH
+
+  # ---- IAM ロール ----
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BlockbusterLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BlockbusterPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::blockbuster-reports-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt PortfolioTable.Arn
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                Resource: "*"
+
+  # ---- Lambda: バックテスト (毎日 16:00 JST = 07:00 UTC) ----
+  BacktestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: blockbuster-backtest
+      PackageType: Image
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref ReportsBucket
+          DYNAMODB_TABLE: !Ref PortfolioTable
+          SES_SENDER: !Ref SESEmailAddress
+          SES_RECIPIENT: !Ref SESEmailAddress
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: "cron(0 7 * * ? *)"
+            Name: blockbuster-daily-backtest
+            Description: "毎日 16:00 JST にバックテストを実行しメール送信"
+            Enabled: true
+    Metadata:
+      DockerTag: latest
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerBuildArgs:
+        HANDLER: blockbuster.handlers.backtest_handler.handler
+
+  # ---- Lambda: ペーパートレード (平日 09:00-15:30 JST = 00:00-06:30 UTC を 5分毎) ----
+  PaperTradeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: blockbuster-paper-trade
+      PackageType: Image
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref ReportsBucket
+          DYNAMODB_TABLE: !Ref PortfolioTable
+          SES_SENDER: !Ref SESEmailAddress
+          SES_RECIPIENT: !Ref SESEmailAddress
+      Events:
+        TradingSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: "cron(*/5 0-6 ? * MON-FRI *)"
+            Name: blockbuster-paper-trade-tick
+            Description: "平日 09:00-15:30 JST を 5分毎に実行 (TSE取引時間外は自動スキップ)"
+            Enabled: true
+    Metadata:
+      DockerTag: latest
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerBuildArgs:
+        HANDLER: blockbuster.handlers.paper_trade_handler.handler
+
+Outputs:
+  BacktestFunctionArn:
+    Value: !GetAtt BacktestFunction.Arn
+  PaperTradeFunctionArn:
+    Value: !GetAtt PaperTradeFunction.Arn
+  ReportsBucketName:
+    Value: !Ref ReportsBucket
+  PortfolioTableName:
+    Value: !Ref PortfolioTable
